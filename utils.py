@@ -6,10 +6,17 @@ import pandas as pd
 from scipy.sparse import csgraph
 import matplotlib.pyplot as plt
 
+
+class ConnectomeAnalysis:
+    @staticmethod
+    def construct_connection_matrix(csv_path):
+        pass
+
+
 class PlotMethod:
     @staticmethod
     def log_log_plot(
-        list, 
+        data, # list or matrix 
         bin_num, 
         regression=False,
         range_=None, # tuple: (min,max)
@@ -36,7 +43,41 @@ class PlotMethod:
         ## -- histogram -- ##
         count, bins = np.histogram(x, bins=bin_num, range=(xmin, xmax), density=density)
         bin_centers = 0.5 * (bins[1:] + bins[:-1])
+        mask = (count > 0) & (bin_centers > 0)
+        log_count = np.log(count[mask])
+        log_bin_centers = np.log(bin_centers[mask])
         
+        ## -- scatter --- ##
+        if ax is None:
+            _, ax = plt.subplots(figsize=(8, 6), dpi=300)
+        ax.scatter(log_bin_centers, log_count, s=10, color=color_scatter)
+        slope = intercept = None
+        ax.set_xlabel("Log(Connection Strength)", fontsize=14)
+        ax.set_ylabel("Log(Probability Density)", fontsize=14)
+        
+        ## -- regression (optional) -- ##
+        if regression:
+            n = log_bin_centers.size
+            low = int(np.floor(lowerbound * n))
+            high = int(np.ceil(higherbound * n))
+            x_log_min = float(np.min(log_bin_centers[low:high]))
+            x_log_max = float(np.max(log_bin_centers[low:high]))
+            uniform_log_bin_centers = np.linspace(x_log_min, x_log_max, int(num_points)) # interception
+            uniform_log_count = np.interp(uniform_log_bin_centers, log_bin_centers, log_count)
+            slope, intercept = np.polyfit(uniform_log_bin_centers, uniform_log_count, 1) # fit
+            fit_line = slope * uniform_log_bin_centers + intercept
+            ax.plot(uniform_log_bin_centers, fit_line, linestyle="--", color=color_fit,
+            # label=f"Fitted line: slope = {slope:.2f}")
+            # ax.legend()
+            print("Fitted line: slope = {slope:.2f}")
+
+        if show:
+            plt.show()
+
+        if return_params:
+            return slope, intercept, ax
+        
+        return ax
         
         
 class MatrixMethod:
