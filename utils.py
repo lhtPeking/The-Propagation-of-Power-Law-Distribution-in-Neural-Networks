@@ -66,7 +66,7 @@ class PlotMethod:
             uniform_log_count = np.interp(uniform_log_bin_centers, log_bin_centers, log_count)
             slope, intercept = np.polyfit(uniform_log_bin_centers, uniform_log_count, 1) # fit
             fit_line = slope * uniform_log_bin_centers + intercept
-            ax.plot(uniform_log_bin_centers, fit_line, linestyle="--", color=color_fit,
+            ax.plot(uniform_log_bin_centers, fit_line, linestyle="--", color=color_fit)
             # label=f"Fitted line: slope = {slope:.2f}")
             # ax.legend()
             print("Fitted line: slope = {slope:.2f}")
