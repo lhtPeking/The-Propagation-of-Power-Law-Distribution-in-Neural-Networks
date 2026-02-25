@@ -3,15 +3,55 @@ import numpy as np
 from scipy import sparse
 import re
 import pandas as pd
-from scipy.sparse import csgraph
+from scipy.sparse import coo_matrix, csr_matrix, save_npz, load_npz, csgraph
 import matplotlib.pyplot as plt
 
 
 class ConnectomeAnalysis:
     @staticmethod
-    def construct_connection_matrix(csv_path):
-        pass
+    def construct_connection_matrix(csv_path, make_dense=True):
+        df = pd.read_csv(csv_path, header=None, names=["pre", "post", "w"])
+        df["pre"] = df["pre"].astype(np.int64)
+        df["post"] = df["post"].astype(np.int64)
+        df["w"] = df["w"].astype(np.float64)
+        
+        # sum duplicates
+        df = df.groupby(["pre", "post"], as_index=False)["w"].sum()
+        
+        # Mapping: from list to matrix
+        node_ids = np.unique(np.concatenate([df["pre"].values, df["post"].values]))
+        node_ids.sort()
+        id_to_idx = {nid: i for i, nid in enumerate(node_ids)}
+        idx_to_id = node_ids
+        rows = np.fromiter((id_to_idx[n] for n in df["pre"].values), dtype=np.int64, count=len(df))
+        cols = np.fromiter((id_to_idx[n] for n in df["post"].values), dtype=np.int64, count=len(df))
+        data = df["w"].values
+        A = coo_matrix((data, (rows, cols)), shape=(len(node_ids), len(node_ids))).tocsr() # coo for coordinate list, csr for compressed sparse row
+        
+        if make_dense:
+            A = A.toarray().astype(np.float32, copy=False)
 
+        return A
+    
+    @staticmethod
+    def connection_matrix_scaling(matrix):
+        ## -- scale the matrix before compute its eigenspectrum -- ##
+        
+        
+        return scaled_matrix
+
+    @staticmethod
+    def compute_eigenspectrum(scaled_matrix, symmetrization=True):
+        A = np.asarray(scaled_matrix, dtype=np.float32)
+        
+        ## -- symmetrization (optional) -- ##
+        if symmetrization:
+            A = 0.5 * (A + A.T)
+            eigenvalue_list = np.linalg.eigvalsh(A) # h for hermitian
+        else:
+            eigenvalue_list = np.linalg.eigvals(A)
+        
+        return eigenvalue_list
 
 class PlotMethod:
     @staticmethod
@@ -28,7 +68,9 @@ class PlotMethod:
         color_fit="red",
         show=True,
         ax=None,
-        return_params=True
+        return_params=True,
+        xlabel="Log(Connection Strength)",
+        ylabel="Log(Probability Density)"
         ):
         
         ## -- data preparation -- ##
@@ -52,8 +94,8 @@ class PlotMethod:
             _, ax = plt.subplots(figsize=(8, 6), dpi=300)
         ax.scatter(log_bin_centers, log_count, s=10, color=color_scatter)
         slope = intercept = None
-        ax.set_xlabel("Log(Connection Strength)", fontsize=14)
-        ax.set_ylabel("Log(Probability Density)", fontsize=14)
+        ax.set_xlabel(xlabel, fontsize=14)
+        ax.set_ylabel(ylabel, fontsize=14)
         
         ## -- regression (optional) -- ##
         if regression:
@@ -69,7 +111,7 @@ class PlotMethod:
             ax.plot(uniform_log_bin_centers, fit_line, linestyle="--", color=color_fit)
             # label=f"Fitted line: slope = {slope:.2f}")
             # ax.legend()
-            print("Fitted line: slope = {slope:.2f}")
+            print(f"Fitted line: slope = {slope:.2f}")
 
         if show:
             plt.show()
@@ -79,11 +121,8 @@ class PlotMethod:
         
         return ax
         
-        
-class MatrixMethod:
-    @staticmethod
-    def compute_eigenspectrum(matrix):
-        pass
+
+    
         
 
 class SymmetricActivitySparse:
