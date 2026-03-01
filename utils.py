@@ -36,7 +36,7 @@ class ConnectomeAnalysis:
     @staticmethod
     def connection_matrix_scaling(matrix):
         ## -- scale the matrix before compute its eigenspectrum -- ##
-        
+        # This step could be ignored if all datasets have a same N
         
         return scaled_matrix
 
@@ -52,6 +52,36 @@ class ConnectomeAnalysis:
             eigenvalue_list = np.linalg.eigvals(A)
         
         return eigenvalue_list
+    
+    @staticmethod
+    def compute_brunel_weight_eigenspectrum(scaled_matrix, symmetrization=True, neg_fraction=1/5, scale=4.0, seed=42):
+        A = np.asarray(scaled_matrix, dtype=np.float32)
+        n = A.shape[0]
+        if symmetrization:
+            A = 0.5 * (A + A.T)
+
+        rng = np.random.default_rng(seed)
+        triu_r, triu_c = np.triu_indices(n, k=0) # k=0 includes diagonal, r for row, c for column
+        num_unique = triu_r.size
+        k = int(round(neg_fraction * num_unique))
+        
+        pick = rng.choice(num_unique, size=k, replace=False)
+        r = triu_r[pick]
+        c = triu_c[pick]
+
+        A[r, c] = -np.abs(A[r, c]) * scale
+        A[c, r] = A[r, c]
+
+        if symmetrization:
+            eigenvalue_list = np.linalg.eigvalsh(A)
+        else:
+            eigenvalue_list = np.linalg.eigvals(A)
+
+        return eigenvalue_list
+
+    
+    
+    
 
 class PlotMethod:
     @staticmethod
