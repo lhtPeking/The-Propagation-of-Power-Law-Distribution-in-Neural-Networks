@@ -54,6 +54,33 @@ class ConnectomeAnalysis:
         return eigenvalue_list
     
     @staticmethod
+    def compute_shuffled_eigenspectrum(scaled_matrix, symmetrization=True, shuffle_diagonal=True, seed=42):
+        A = np.asarray(scaled_matrix, dtype=np.float32)
+        if symmetrization:
+            A = 0.5 * (A + A.T)
+            
+        n = A.shape[0]
+        rng = np.random.default_rng(seed)
+        
+        iu = np.triu_indices(n, k=1)
+        upper_vals = A[iu].copy()
+        rng.shuffle(upper_vals)
+        
+        A_shuf = np.zeros_like(A)
+        A_shuf[iu] = upper_vals
+        A_shuf[(iu[1], iu[0])] = upper_vals
+        
+        diag = np.diag(A).copy()
+        if shuffle_diagonal:
+            rng.shuffle(diag)
+            
+        np.fill_diagonal(A_shuf, diag)
+        
+        eigenvalue_list = np.linalg.eigvalsh(A_shuf)
+
+        return eigenvalue_list
+    
+    @staticmethod
     def compute_brunel_weight_eigenspectrum(scaled_matrix, symmetrization=True, neg_fraction=1/5, scale=4.0, seed=42):
         A = np.asarray(scaled_matrix, dtype=np.float32)
         n = A.shape[0]
