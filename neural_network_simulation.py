@@ -204,3 +204,244 @@ class LIFNetwork:
         # advance time step counter
         self.current_step += 1
         return fired
+    
+    def run(self, T=None, verbose=True):
+        """
+        Run the simulation.
+
+        Args:
+            T : float or None
+                If not None, override the total simulation time with T (s).
+                The number of steps will be min(int(T / dt), self.steps).
+            verbose : bool
+                If True, print progress and spike count every 100 steps.
+
+        Returns:
+            spikes : np.ndarray or None
+                If record_spikes == True:
+                    Boolean array of shape (steps_run, N) with spike raster.
+                Otherwise:
+                    None.
+        """
+        if T is not None:
+            steps = min(int(T / self.dt), self.steps)
+        else:
+            steps = self.steps
+
+        for k in range(steps):
+            fired = self.step()
+            if (k + 1) % 100 == 0:
+                if self.record_spikes:
+                    total_spikes = int(self.spikes[:k+1].sum())
+                else:
+                    total_spikes = np.nan
+                print(f"step {k+1}/{steps}, cumulative spikes = {total_spikes}")
+
+        return self.spikes, total_spikes
+
+    def get_firing_rates(self):
+        """
+        Compute average firing rates (Hz) of all neurons based on recorded spikes.
+
+        Returns:
+            rates : np.ndarray, shape (N,)
+                Average firing rate of each neuron in Hz.
+        """
+        if self.spikes is None:
+            raise RuntimeError("record_spikes is False; no spike raster to compute rates from.")
+
+        # effective simulated time = number of completed steps * dt
+        T_sim = self.current_step * self.dt
+
+        # spike count per neuron
+        counts = self.spikes[:self.current_step].sum(axis=0)  # shape (N,)
+        # firing rate in Hz = spikes per second
+        return counts / T_sim
+    
+    def plot_raster(self, max_neurons=200, figsize=(10, 6), markersize=2):
+        """
+        Plot a raster plot of recorded spikes.
+
+        Args:
+            max_neurons : int
+                Maximum number of neurons to show (default 200).
+                If N is large, drawing all neurons makes raster unreadable.
+            figsize : tuple
+                Size of the matplotlib figure.
+            markersize : float
+                Size of spike dots.
+        """
+
+        if not self.record_spikes:
+            raise RuntimeError("record_spikes=False, cannot plot raster.")
+        if self.current_step == 0:
+            raise RuntimeError("Simulation has not been run yet.")
+
+        # Use only the first M neurons (for readability)
+        M = min(max_neurons, self.N)
+
+        spike_matrix = self.spikes[:self.current_step, :M]   # shape: (time, M)
+        times = np.arange(self.current_step) * self.dt       # x-axis time in seconds
+
+        plt.figure(figsize=figsize, dpi=500)
+
+        # For each neuron i, plot a dot at times where spike_matrix[:, i] == True
+        for i in range(M):
+            t_spike = times[spike_matrix[:, i]]
+            plt.plot(t_spike, np.full_like(t_spike, i),
+                    '.', markersize=markersize, color="black")
+
+        plt.xlabel("Time (s)")
+        plt.ylabel("Neuron index")
+        plt.title(f"Raster Plot (showing {M}/{self.N} neurons)")
+        plt.ylim([-1, M])
+        plt.tight_layout()
+        plt.show()
+        
+    def plot_voltage(self, max_neurons=20, figsize=(12, 6)):
+        """
+        Plot membrane voltage traces for a subset of neurons.
+
+        Args:
+            max_neurons : int
+                Number of neurons to plot (default 20).
+            figsize : tuple
+                Figure size (width, height).
+        """
+        if not self.record_voltage:
+            raise RuntimeError("record_voltage=False, no voltage history to plot.")
+
+        if self.current_step == 0:
+            raise RuntimeError("Simulation has not been run yet.")
+
+        # Select neurons to plot
+        M = min(max_neurons, self.N)
+
+        # Voltage history is shape (steps, N)
+        Vmat = self.V_hist[:self.current_step, :M]
+        times = np.arange(self.current_step) * self.dt
+
+        import matplotlib.pyplot as plt
+        plt.figure(figsize=figsize, dpi=500)
+
+        # Plot each neuron’s membrane potential
+        for i in range(M):
+            plt.plot(times, Vmat[:, i], label=f"Neuron {i}", linewidth=1)
+
+        plt.xlabel("Time (s)")
+        plt.ylabel("Membrane potential (V)")
+        plt.title(f"Voltage traces (showing {M}/{self.N} neurons)")
+        plt.tight_layout()
+        plt.show()
+
+    def analyze_covariance(self, max_modes=None, loglog_cov=True, figsize=(10, 10)):
+        """
+        Compute covariance matrix from voltage traces, plot:
+        (1) Eigenvalue spectrum (log-log)
+        (2) Covariance distribution (histogram)
+
+        Args:
+            max_modes : int or None
+                If set, only the largest `max_modes` eigenvalues are plotted.
+            loglog_cov : bool
+                If True, use log scale for covariance histogram y-axis.
+            figsize : tuple
+                Size of the entire figure.
+        """
+
+        if not self.record_voltage:
+            raise RuntimeError("record_voltage=False, voltage history unavailable.")
+
+        if self.current_step == 0:
+            raise RuntimeError("Simulation has not been run yet.")
+
+        import matplotlib.pyplot as plt
+
+        # ===== 1) Prepare voltage data =====
+        V = self.V_hist[:self.current_step].T    # (N, T)
+        V_centered = V - V.mean(axis=1, keepdims=True)
+
+        # ===== 2) Covariance matrix =====
+        C = np.cov(V_centered)                   # (N, N)
+
+        # ===== 3) Eigenvalue spectrum =====
+        eigvals = np.linalg.eigvalsh(C)
+        eigvals = np.sort(eigvals)[::-1]         # descending order
+
+        if max_modes is not None:
+            eigvals = eigvals[:max_modes]
+
+        # ===== 4) Covariance distribution (off-diagonal only) =====
+        offdiag = C[~np.eye(C.shape[0], dtype=bool)]
+
+        # ===== 5) Plotting =====
+        fig, ax = plt.subplots(3, 1, figsize=figsize, dpi=500)
+
+        # ---- (A) Eigen-spectrum (index based)) ----
+        ax[0].loglog(eigvals, marker='o', markersize=4, linestyle='-')
+        ax[0].set_xlabel("Eigenvalue index")
+        ax[0].set_ylabel("Eigenvalue magnitude")
+        ax[0].set_title("Eigen-spectrum of Covariance Matrix (log-log)")
+        ax[0].grid(True, which="both", ls="--", alpha=0.4)
+
+        # ---- (B) Eigenvalue distribution (log-binned style) ----
+        # use absolute value just in case, though covariance eigenvalues should be >= 0
+        abs_eigs = np.abs(eigvals)
+
+        # histogram in linear space, density=True gives PDF estimate
+        counts, bin_edges = np.histogram(abs_eigs, bins=100000, density=True)
+
+        # bin centers
+        centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+        # only keep bins with non-zero density (log(0) is invalid)
+        mask = counts > 0
+
+        ax[1].loglog(centers[mask], counts[mask], marker='o', linestyle='none')
+
+        ax[1].set_xlabel("Eigenvalue")
+        ax[1].set_ylabel("Probability density")
+        ax[1].set_title("Distribution of Eigenvalues (log-log)")
+        ax[1].grid(True, which="both", ls="--", alpha=0.4)
+        
+        # ---- (C) Covariance distribution ----
+        pos = offdiag[offdiag > 0]
+        neg = offdiag[offdiag < 0]
+        neg_abs = -neg
+        all_abs = np.concatenate([pos, neg_abs])
+        
+        n_bins = 10000
+        bins = np.linspace(all_abs.min(), all_abs.max(), n_bins + 1)
+        centers = 0.5 * (bins[:-1] + bins[1:])
+        
+        def plot_hist_line(data, label, **plot_kwargs):
+            if data.size == 0:
+                return
+            counts, _ = np.histogram(data, bins=bins, density=True)
+            mask = counts > 0
+            if loglog_cov:
+                ax[2].loglog(
+                    centers[mask], counts[mask],
+                    marker='o', linestyle='none',
+                    label=label, **plot_kwargs
+                )
+            else:
+                ax[2].plot(
+                    centers[mask], counts[mask],
+                    marker='o', linestyle='none',
+                    label=label, **plot_kwargs
+                )
+        
+        plot_hist_line(all_abs, label=r"$|C_{ij}|$", color="grey", alpha=0.3)
+        plot_hist_line(pos, label=r"$C_{ij} > 0$", color="#A3D78A", alpha=0.3)
+        plot_hist_line(neg_abs, label=r"$|C_{ij}|,\ C_{ij}<0$", color="#FF5555", alpha=0.3)
+        
+        ax[2].set_xlabel("Covariance value")
+        ax[2].set_ylabel(r"$P(C_{ij})$")
+        ax[2].set_title("Distribution of Off-Diagonal Covariances")
+        ax[2].legend()
+
+        plt.tight_layout()
+        plt.show()
+
+        return C, eigvals, offdiag

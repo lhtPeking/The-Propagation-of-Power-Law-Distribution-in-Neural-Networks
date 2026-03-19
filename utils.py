@@ -106,7 +106,48 @@ class ConnectomeAnalysis:
 
         return eigenvalue_list
 
-    
+    @staticmethod
+    def compute_shuffled_brunel_weight_eigenspectrum(scaled_matrix, symmetrization=True, shuffle_diagonal=True, neg_fraction=1/5, scale=4.0, seed=42):
+        A = np.asarray(scaled_matrix, dtype=np.float32)
+
+        if symmetrization:
+            A = 0.5 * (A + A.T)
+
+        n = A.shape[0]
+        rng = np.random.default_rng(seed)
+        
+        # Step 1: shuffle upper triangle
+        iu = np.triu_indices(n, k=1)
+        upper_vals = A[iu].copy()
+        rng.shuffle(upper_vals)
+
+        A_shuf = np.zeros_like(A)
+        A_shuf[iu] = upper_vals
+        A_shuf[(iu[1], iu[0])] = upper_vals
+
+        diag = np.diag(A).copy()
+        if shuffle_diagonal:
+            rng.shuffle(diag)
+        np.fill_diagonal(A_shuf, diag)
+
+        # Step 2: apply Brunel-style weights
+        triu_r, triu_c = np.triu_indices(n, k=0)
+        num_unique = triu_r.size
+        k = int(round(neg_fraction * num_unique))
+        pick = rng.choice(num_unique, size=k, replace=False)
+        r = triu_r[pick]
+        c = triu_c[pick]
+
+        A_shuf[r, c] = -np.abs(A_shuf[r, c]) * scale
+        A_shuf[c, r] = A_shuf[r, c]
+
+        # Step 3: eigenspectrum
+        if symmetrization:
+            eigenvalue_list = np.linalg.eigvalsh(A_shuf)
+        else:
+            eigenvalue_list = np.linalg.eigvals(A_shuf)
+
+        return eigenvalue_list
     
     
 
@@ -143,8 +184,8 @@ class PlotMethod:
         count, bins = np.histogram(x, bins=bin_num, range=(xmin, xmax), density=density)
         bin_centers = 0.5 * (bins[1:] + bins[:-1])
         mask = (count > 0) & (bin_centers > 0)
-        log_count = np.log(count[mask])
-        log_bin_centers = np.log(bin_centers[mask])
+        log_count = np.log10(count[mask])
+        log_bin_centers = np.log10(bin_centers[mask])
         
         ## -- scatter --- ##
         if ax is None:
