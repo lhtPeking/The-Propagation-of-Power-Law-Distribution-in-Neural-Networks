@@ -104,7 +104,41 @@ class LIFNetwork:
             weights_I = w_min_I * (1.0 + np.random.pareto(self.pareto_mu, size=(NI, self.N)))
 
             self.W[NE:, :] = -weights_I * mask_I   # negative sign for I → *
-            
+        elif weight=='fixed_indegree_gaussian':
+             # Brunel-style fixed indegree:
+            # for each postsynaptic neuron, sample a fixed number of presynaptic neurons
+            # from E and I pools independently.
+            #
+            # W[src, tgt] = weight from presynaptic src to postsynaptic tgt
+
+            self.W.fill(0.0)
+
+            # fixed indegree for each target neuron
+            CE = int(round(pE * NE))   # number of excitatory inputs per target
+            CI = int(round(pI * NI))   # number of inhibitory inputs per target
+
+            CE = min(CE, NE)
+            CI = min(CI, NI)
+
+            exc_pool = np.arange(NE)           # excitatory source neurons: [0, ..., NE-1]
+            inh_pool = np.arange(NE, self.N)   # inhibitory source neurons: [NE, ..., N-1]
+
+            for tgt in range(self.N):
+                # 1) fixed number of excitatory presynaptic neurons
+                exc_src = np.random.choice(exc_pool, size=CE, replace=False)
+                self.W[exc_src, tgt] = np.random.normal(
+                    loc=wE,
+                    scale=abs(wE) * 0.2,
+                    size=CE
+                )
+
+                # 2) fixed number of inhibitory presynaptic neurons
+                inh_src = np.random.choice(inh_pool, size=CI, replace=False)
+                self.W[inh_src, tgt] = np.random.normal(
+                    loc=wI,
+                    scale=abs(wI) * 0.2,
+                    size=CI
+                )
 
         # ----- 3) No self-connections -----
         np.fill_diagonal(self.W, 0.0)
