@@ -18,12 +18,14 @@ class LIFNetwork:
         p_conn=0.1,      # float: connection probability between any two neurons
         w_scale=1e-9,  # float (A): standard deviation (scale) of synaptic weights
         
+        g=4.0, # brunel parameter
+        
         pareto_mu=1.5,
         
         I_ext_mean=1e-9,
         I_ext_std=5e-10,    # float (A): white noise external input current to each neuron
         
-        seed=42,       # int or None: random seed for reproducibility
+        seed=1,       # int or None: random seed for reproducibility
         record_spikes=True,  # bool: whether to store full spike raster (steps x N)
         record_voltage=True,
         
@@ -66,7 +68,7 @@ class LIFNetwork:
 
         # Weight parameters
         wE = w_scale             # excitatory weight scale (positive)
-        wI = -4 * w_scale        # inhibitory weight scale (negative, stronger magnitude)
+        wI = -g * w_scale        # inhibitory weight scale (negative, stronger magnitude)
 
         # Connection probabilities
         pE = p_conn              # E → * connection probability
@@ -87,7 +89,7 @@ class LIFNetwork:
             self.W[NE:, :] = weights_I * mask_I
         elif weight=='powerlaw':
             w_min_E = w_scale * ((self.pareto_mu-1)/self.pareto_mu)     # minimum excitatory weight
-            w_min_I = 4 * w_scale * ((self.pareto_mu-1)/self.pareto_mu) # inhibitory minimum magnitude (I stronger)
+            w_min_I = g * w_scale * ((self.pareto_mu-1)/self.pareto_mu) # inhibitory minimum magnitude (I stronger)
             
             # ----- 1) Excitatory → all (positive Pareto weights) -----
             mask_E = (np.random.rand(NE, self.N) < pE)
@@ -105,10 +107,9 @@ class LIFNetwork:
 
             self.W[NE:, :] = -weights_I * mask_I   # negative sign for I → *
         elif weight=='fixed_indegree_gaussian':
-             # Brunel-style fixed indegree:
+            # Brunel-style fixed indegree:
             # for each postsynaptic neuron, sample a fixed number of presynaptic neurons
             # from E and I pools independently.
-            #
             # W[src, tgt] = weight from presynaptic src to postsynaptic tgt
 
             self.W.fill(0.0)
@@ -139,6 +140,43 @@ class LIFNetwork:
                     scale=abs(wI) * 0.2,
                     size=CI
                 )
+                
+        elif weight == 'fixed_indegree_powerlaw':
+            # Brunel-style fixed indegree with power-law synaptic weights
+            # W[src, tgt] = weight from presynaptic src to postsynaptic tgt
+
+            self.W.fill(0.0)
+
+            # fixed indegree for each target neuron
+            CE = int(round(pE * NE))   # number of excitatory inputs per target
+            CI = int(round(pI * NI))   # number of inhibitory inputs per target
+
+            CE = min(CE, NE)
+            CI = min(CI, NI)
+
+            exc_pool = np.arange(NE)           # excitatory source neurons: [0, ..., NE-1]
+            inh_pool = np.arange(NE, self.N)   # inhibitory source neurons: [NE, ..., N-1]
+
+            # keep the same mean scale as in the dense powerlaw case
+            w_min_E = w_scale * ((self.pareto_mu - 1) / self.pareto_mu)
+            w_min_I = g * w_scale * ((self.pareto_mu - 1) / self.pareto_mu)
+
+            for tgt in range(self.N):
+                # 1) fixed number of excitatory presynaptic neurons
+                exc_src = np.random.choice(exc_pool, size=CE, replace=False)
+                exc_weights = w_min_E * (
+                    1.0 + np.random.pareto(self.pareto_mu, size=CE)
+                )
+                self.W[exc_src, tgt] = exc_weights
+
+                # 2) fixed number of inhibitory presynaptic neurons
+                inh_src = np.random.choice(inh_pool, size=CI, replace=False)
+                inh_weights = w_min_I * (
+                    1.0 + np.random.pareto(self.pareto_mu, size=CI)
+                )
+                self.W[inh_src, tgt] = -inh_weights   # inhibitory weights are negative
+
+
 
         # ----- 3) No self-connections -----
         np.fill_diagonal(self.W, 0.0)
