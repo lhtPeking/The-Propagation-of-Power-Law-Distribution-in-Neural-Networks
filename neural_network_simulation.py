@@ -29,7 +29,8 @@ class LIFNetwork:
         record_spikes=True,  # bool: whether to store full spike raster (steps x N)
         record_voltage=True,
         
-        weight='gaussian' # gaussian weighted or powerlaw weighted
+        weight='gaussian', # gaussian weighted or powerlaw weighted
+        W=None
     ):
         
         if seed is not None:
@@ -175,6 +176,15 @@ class LIFNetwork:
                     1.0 + np.random.pareto(self.pareto_mu, size=CI)
                 )
                 self.W[inh_src, tgt] = -inh_weights   # inhibitory weights are negative
+            
+        elif weight == 'externally_assigned':
+            self.W = w_scale * np.array(W, copy=True)
+
+            n_inh = self.N // 2
+            inh_neurons = np.random.choice(self.N, size=n_inh, replace=False)
+            
+            self.W = np.abs(self.W)
+            self.W[inh_neurons, :] *= -1
 
 
 
@@ -309,7 +319,7 @@ class LIFNetwork:
                     total_spikes = np.nan
                 print(f"step {k+1}/{steps}, cumulative spikes = {total_spikes}")
 
-        return self.spikes, total_spikes
+        return self.spikes, total_spikes, self.V_hist
 
     def get_firing_rates(self):
         """
@@ -517,3 +527,7 @@ class LIFNetwork:
         plt.show()
 
         return C, eigvals, offdiag
+    
+    
+class Dopamine_Learning:
+    pass

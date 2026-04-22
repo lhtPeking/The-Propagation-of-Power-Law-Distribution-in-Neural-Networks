@@ -3,7 +3,7 @@ import numpy as np
 from scipy import sparse
 import re
 import pandas as pd
-from scipy.sparse import coo_matrix, csr_matrix, save_npz, load_npz, csgraph
+from scipy.sparse import coo_matrix, csr_matrix, save_npz, load_npz, csgraph, issparse
 import matplotlib.pyplot as plt
 
 
@@ -219,6 +219,230 @@ class PlotMethod:
         
         return ax
         
+    @staticmethod
+    def MLE_regression(
+        data,
+        xmin_num=100,
+        xmin_range=None,          # tuple: (xmin_low, xmin_high)
+        min_tail_size=20,         # require at least this many points in the tail
+        ax=None,
+        show=True,
+        color_body="gray",        # x < xmin
+        color_tail="darkblue",    # x >= xmin
+        color_fit="red",
+        color_xmin="red",
+        xlabel="x",
+        ylabel="Pr(X > x)",
+        title="Power-law fit on CCDF",
+        return_details=True,
+        show_legend=False
+    ):
+        """
+        Continuous power-law fit:
+            p(x) ~ x^{-alpha}, for x >= xmin
+
+        CCDF:
+            Pr(X > x) = (x / xmin)^(-(alpha - 1)), x >= xmin
+
+        Method:
+            - choose candidate xmin only from sample values
+            - optionally downsample candidate xmins to xmin_num points
+            - for each xmin, fit alpha by MLE
+            - compute KS distance between empirical tail CDF and model CDF
+            - choose xmin, alpha minimizing KS
+            - plot empirical CCDF, with x < xmin and x >= xmin in different colors
+        """
+        x = np.asarray(data, dtype=float).ravel()
+        x = x[np.isfinite(x)]
+        x = x[x > 0]
+
+        if x.size == 0:
+            raise ValueError("No positive finite data points found.")
+
+        x.sort()
+        x_min_data = float(np.min(x))
+        x_max_data = float(np.max(x))
+
+        if xmin_range is None:
+            scan_low, scan_high = x_min_data, x_max_data
+        else:
+            scan_low, scan_high = map(float, xmin_range)
+
+        if scan_low <= 0:
+            raise ValueError("xmin_range lower bound must be > 0.")
+        if scan_high <= scan_low:
+            raise ValueError("xmin_range upper bound must be greater than lower bound.")
+
+        # ---- candidate xmin: only choose from sample values ----
+        unique_x = np.unique(x)
+        candidate_xmins = unique_x[(unique_x >= scan_low) & (unique_x <= scan_high)]
+
+        if candidate_xmins.size == 0:
+            raise ValueError("No sample values fall inside xmin_range.")
+
+        # logarithmically downsample candidates if too many
+        if candidate_xmins.size > xmin_num:
+            log_pos = np.linspace(
+                0, np.log10(candidate_xmins.size - 1), int(xmin_num)
+            )
+            idx = np.unique(np.round(10**log_pos).astype(int))
+            idx[0] = 0
+            idx[-1] = candidate_xmins.size - 1
+            candidate_xmins = candidate_xmins[idx]
+
+        best = {
+            "xmin": None,
+            "alpha": None,
+            "ks": np.inf,
+            "n_tail": 0
+        }
+
+        # ---- fit alpha and KS for each xmin ----
+        for xmin in candidate_xmins:
+            tail = x[x >= xmin]
+            n = tail.size
+
+            if n < min_tail_size:
+                continue
+
+            logs = np.log(tail / xmin)
+            denom = np.sum(logs)
+
+            if denom <= 0:
+                continue
+
+            alpha = 1.0 + n / denom
+
+            # Empirical tail CDF
+            tail_sorted = np.sort(tail)
+            empirical_cdf = np.arange(1, n + 1) / n
+
+            # Model CDF for continuous power law
+            model_cdf = 1.0 - (tail_sorted / xmin) ** (-(alpha - 1.0))
+
+            ks = np.max(np.abs(empirical_cdf - model_cdf))
+
+            if ks < best["ks"]:
+                best["xmin"] = float(xmin)
+                best["alpha"] = float(alpha)
+                best["ks"] = float(ks)
+                best["n_tail"] = int(n)
+
+        if best["xmin"] is None:
+            raise RuntimeError(
+                "No valid xmin found. Try reducing min_tail_size or adjusting xmin_range/xmin_num."
+            )
+
+        xmin_hat = best["xmin"]
+        alpha_hat = best["alpha"]
+        ks_hat = best["ks"]
+
+        # ---- empirical CCDF ----
+        if ax is None:
+            _, ax = plt.subplots(figsize=(8, 6), dpi=300)
+
+        x_sorted = np.sort(x)
+        n_all = x_sorted.size
+        empirical_ccdf = (n_all - np.arange(1, n_all + 1)) / n_all
+
+        # body: x < xmin
+        body_mask = (x_sorted < xmin_hat) & (empirical_ccdf > 0)
+        ax.plot(
+            x_sorted[body_mask],
+            empirical_ccdf[body_mask],
+            marker="o",
+            linestyle="None",
+            markersize=3,
+            color=color_body,
+            alpha=0.7,
+            label=r"Empirical CCDF ($x < x_{\min}$)"
+        )
+
+        # tail: x >= xmin
+        tail_mask = (x_sorted >= xmin_hat) & (empirical_ccdf > 0)
+        ax.plot(
+            x_sorted[tail_mask],
+            empirical_ccdf[tail_mask],
+            marker="o",
+            linestyle="None",
+            markersize=3,
+            color=color_tail,
+            alpha=0.9,
+            label=r"Empirical CCDF ($x \geq x_{\min}$)"
+        )
+
+        # ---- fitted CCDF on tail ----
+        # ---- fitted CCDF on tail ----
+        tail_data = np.sort(x[x >= xmin_hat])
+        end_idx = int(np.ceil(0.999 * len(tail_data))) - 1
+        x_fit_end = float(tail_data[end_idx])
+
+        x_fit = np.logspace(np.log10(xmin_hat), np.log10(x_fit_end), 500)
+        ccdf_fit = (x_fit / xmin_hat) ** (-(alpha_hat - 1.0))
+
+        # To align visually with empirical whole-sample CCDF, scale by tail fraction
+        tail_fraction = best["n_tail"] / n_all
+        ccdf_fit_allscale = tail_fraction * ccdf_fit
+
+        ax.plot(
+            x_fit,
+            ccdf_fit_allscale,
+            linestyle="--",
+            linewidth=2,
+            color=color_fit,
+            label=rf"Power-law fit ($\alpha={alpha_hat:.4f}$)"
+        )
+
+        # ---- mark xmin ----
+        tail_idx = np.where((x_sorted >= xmin_hat) & (empirical_ccdf > 0))[0]
+
+        if tail_idx.size > 0:
+            idx0 = tail_idx[0]
+            x_xmin_point = x_sorted[idx0]
+            y_xmin_point = empirical_ccdf[idx0]
+        else:
+            # fallback: use fitted curve value at xmin
+            x_xmin_point = xmin_hat
+            y_xmin_point = tail_fraction
+
+        ax.scatter(
+            [x_xmin_point],
+            [y_xmin_point],
+            s=80,
+            color=color_xmin,
+            edgecolors="white",
+            linewidths=0,
+            zorder=5,
+            label=rf"$x_{{\min}}={xmin_hat:.4g}$"
+        )
+
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlabel(xlabel, fontsize=14)
+        ax.set_ylabel(ylabel, fontsize=14)
+        ax.set_title(title, fontsize=14)
+        if show_legend:
+            ax.legend(loc="upper right", frameon=False)
+
+        print(f"Estimated xmin = {xmin_hat:.6g}")
+        print(f"Estimated alpha = {alpha_hat:.6f}")
+        print(f"KS distance = {ks_hat:.6f}")
+        print(f"Tail sample size = {best['n_tail']}")
+
+        if show:
+            plt.show()
+
+        if return_details:
+            return {
+                "xmin": xmin_hat,
+                "alpha": alpha_hat,
+                "ks": ks_hat,
+                "n_tail": best["n_tail"],
+                "candidate_xmins": candidate_xmins,
+                "ax": ax
+            }
+
+        return ax
 
     
         
