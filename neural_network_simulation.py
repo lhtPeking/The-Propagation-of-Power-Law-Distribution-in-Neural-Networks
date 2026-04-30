@@ -552,11 +552,11 @@ class LiquidStateMachine(LIFNetwork):
 
     def __init__(
         self,
-        n_inputs=1,
-        input_conn=0.2,
-        input_scale=5e-10,
+        n_inputs=1, # input dimension
+        input_conn=0.2, # input connects to a certain portion of the network
+        input_scale=1.0, # current strength relative to intrinsic connection
         readout_reg=1e-6,
-        input_seed=None,
+        input_seed=42,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -566,13 +566,16 @@ class LiquidStateMachine(LIFNetwork):
         self.input_scale = input_scale
         self.readout_reg = readout_reg
 
+        # input weights are sampled from connection matrix
         rng = np.random.default_rng(input_seed)
         mask = rng.random((self.n_inputs, self.N)) < input_conn
-        self.W_in = rng.normal(
-            loc=input_scale,
-            scale=0.2 * abs(input_scale),
-            size=(self.n_inputs, self.N)
-        ) * mask
+        candidate_weights = self.W[self.W > 0]
+        sampled_weights = rng.choice(
+            candidate_weights,
+            size=(self.n_inputs, self.N),
+            replace=True
+        )
+        self.W_in = input_scale * sampled_weights * mask
 
         # Readout parameters are created after fit_readout()
         self.readout_W = None
@@ -587,7 +590,6 @@ class LiquidStateMachine(LIFNetwork):
             None              -> zeros, shape (steps, n_inputs)
             (steps,)          -> scalar time series, shape (steps, 1)
             (steps, n_inputs) -> projected by W_in
-            (steps, N)        -> interpreted as direct reservoir current
         """
         if u is None:
             return np.zeros((self.steps, self.n_inputs), dtype=np.float64)
@@ -600,17 +602,17 @@ class LiquidStateMachine(LIFNetwork):
         if u.ndim != 2:
             raise ValueError("Input u must have shape (steps,), (steps, n_inputs), or (steps, N).")
 
+        if u.shape[1] != self.n_inputs:
+            raise ValueError(
+                f"Input second dimension must be n_inputs={self.n_inputs}, "
+                f"got {u.shape[1]}."
+            )
+
         if u.shape[0] > self.steps:
             u = u[:self.steps]
         elif u.shape[0] < self.steps:
             pad = np.zeros((self.steps - u.shape[0], u.shape[1]), dtype=np.float64)
             u = np.vstack([u, pad])
-
-        if u.shape[1] not in (self.n_inputs, self.N):
-            raise ValueError(
-                f"Input second dimension must be n_inputs={self.n_inputs} "
-                f"or N={self.N}, got {u.shape[1]}."
-            )
 
         return u
 
@@ -620,11 +622,11 @@ class LiquidStateMachine(LIFNetwork):
         """
         u_t = np.asarray(u_t, dtype=np.float64)
 
-        # Direct current injection into reservoir neurons
-        if u_t.shape[0] == self.N:
-            return u_t
+        if u_t.shape != (self.n_inputs,):
+            raise ValueError(
+                f"u_t must have shape ({self.n_inputs},), got {u_t.shape}."
+            )
 
-        # Input projection: shape (n_inputs,) @ (n_inputs, N) -> (N,)
         return u_t @ self.W_in
 
     def step_with_input(self, I_input=None):
@@ -679,7 +681,7 @@ class LiquidStateMachine(LIFNetwork):
         u=None,
         reset=True,
         feature="filtered_spikes",
-        filter_tau=20e-3,
+        filter_tau=30e-3,
         readout_window=None,
         return_state_trace=False
     ):
@@ -718,6 +720,7 @@ class LiquidStateMachine(LIFNetwork):
 
         spike_counts = np.zeros(self.N, dtype=np.float64)
 
+        # Key Iteration Loop
         for t in range(self.steps):
             I_input = self._input_to_current(u[t])
             fired = self.step_with_input(I_input)
@@ -766,7 +769,7 @@ class LiquidStateMachine(LIFNetwork):
         X = []
         for u in input_trials:
             X.append(self.run_lsm_trial(u=u, reset=True, **trial_kwargs))
-        X = np.asarray(X, dtype=np.float64)
+        X = np.asarray(X, dtype=np.float64) # X.shape = (n_trials, N)
 
         if labels is None:
             return X
@@ -788,16 +791,21 @@ class LiquidStateMachine(LIFNetwork):
         if reg is None:
             reg = self.readout_reg
 
+        self.X_mean_ = X.mean(axis=0)
+        self.X_std_ = X.std(axis=0) + 1e-8
+        X_norm = (X - self.X_mean_) / self.X_std_
+
         if add_bias:
-            X_aug = np.hstack([X, np.ones((X.shape[0], 1))])
+            X_aug = np.hstack([X_norm, np.ones((X_norm.shape[0], 1))])
         else:
-            X_aug = X
+            X_aug = X_norm
 
         self.readout_is_classifier_ = bool(classifier)
 
         if classifier:
             classes = np.unique(y)
             self.readout_classes_ = classes
+            # one-hot
             Y = np.zeros((len(y), len(classes)), dtype=np.float64)
             for k, c in enumerate(classes):
                 Y[y == c, k] = 1.0
@@ -806,23 +814,28 @@ class LiquidStateMachine(LIFNetwork):
             Y = y.astype(np.float64)
             if Y.ndim == 1:
                 Y = Y[:, None]
+                
+        penalty = np.eye(X_aug.shape[1])
+        if add_bias:
+            penalty[-1, -1] = 0.0
 
-        A = X_aug.T @ X_aug + reg * np.eye(X_aug.shape[1])
+        A = X_aug.T @ X_aug + reg * penalty
         B = X_aug.T @ Y
+
         self.readout_W = np.linalg.solve(A, B)
         self.readout_add_bias_ = add_bias
         return self
 
     def predict_readout(self, X):
-        """
-        Predict labels or continuous targets from readout features.
-        """
         if self.readout_W is None:
             raise RuntimeError("Readout has not been trained. Call fit_readout() first.")
 
         X = np.asarray(X, dtype=np.float64)
+
         if X.ndim == 1:
             X = X[None, :]
+
+        X = (X - self.X_mean_) / self.X_std_
 
         if self.readout_add_bias_:
             X = np.hstack([X, np.ones((X.shape[0], 1))])
@@ -852,6 +865,154 @@ class LiquidStateMachine(LIFNetwork):
         X, y = self.build_lsm_dataset(input_trials, labels, **trial_kwargs)
         pred = self.predict_readout(X)
         return np.mean(pred == y)
+
+
+    def make_binary_spike_train(self, rate_hz=20.0, seed=None):
+        """
+        Generate one binary input spike train.
+
+        Return:
+            u: shape (steps,)
+        """
+        rng = np.random.default_rng(seed)
+        p = rate_hz * self.dt
+        return (rng.random(self.steps) < p).astype(np.float64)
+
+
+    def perturb_spike_train_by_distance(self, u, distance=0.1, seed=None):
+        """
+        Create v from u by flipping approximately `distance` fraction of time bins.
+
+        distance = 0.0 -> identical input
+        distance = 0.1 -> 10% bins changed
+        distance = 0.4 -> 40% bins changed
+        """
+        rng = np.random.default_rng(seed)
+
+        u = np.asarray(u, dtype=np.float64).copy()
+        if u.ndim != 1:
+            raise ValueError("u must have shape (steps,).")
+
+        v = u.copy()
+        n_flip = int(round(distance * self.steps))
+
+        flip_idx = rng.choice(self.steps, size=n_flip, replace=False)
+        v[flip_idx] = 1.0 - v[flip_idx]
+
+        return v
+
+
+    def compute_state_distance_trace(
+        self,
+        u,
+        v,
+        filter_tau=30e-3
+    ):
+        """
+        Run two inputs u and v in separate trials and compute
+        ||x_u(t) - x_v(t)|| over time.
+
+        Return:
+            dist_trace: shape (steps,)
+        """
+        _, state_u = self.run_lsm_trial(
+            u=u,
+            reset=True,
+            feature="filtered_spikes",
+            filter_tau=filter_tau,
+            return_state_trace=True
+        )
+
+        _, state_v = self.run_lsm_trial(
+            u=v,
+            reset=True,
+            feature="filtered_spikes",
+            filter_tau=filter_tau,
+            return_state_trace=True
+        )
+
+        dist_trace = np.linalg.norm(state_u - state_v, axis=1)
+
+        return dist_trace
+
+
+    def run_separation_experiment(
+        self,
+        distances=(0.0, 0.1, 0.2, 0.4),
+        n_pairs=200,
+        rate_hz=20.0,
+        filter_tau=30e-3,
+        seed=0
+    ):
+        """
+        Maass-style separation experiment.
+
+        For each input distance d:
+            1. Generate random spike train u.
+            2. Create v by perturbing u with distance d.
+            3. Run u and v separately through the liquid.
+            4. Compute ||x_u(t) - x_v(t)||.
+            5. Average over n_pairs.
+
+        Return:
+            results: dict
+                results[d] = average distance trace, shape (steps,)
+        """
+        rng = np.random.default_rng(seed)
+
+        results = {}
+
+        for d in distances:
+            traces = []
+
+            for _ in range(n_pairs):
+                u = self.make_binary_spike_train(
+                    rate_hz=rate_hz,
+                    seed=rng.integers(1_000_000_000)
+                )
+
+                v = self.perturb_spike_train_by_distance(
+                    u,
+                    distance=d,
+                    seed=rng.integers(1_000_000_000)
+                )
+
+                dist_trace = self.compute_state_distance_trace(
+                    u=u,
+                    v=v,
+                    filter_tau=filter_tau
+                )
+
+                traces.append(dist_trace)
+
+            results[d] = np.mean(np.asarray(traces), axis=0)
+
+        return results
+
+
+    def plot_separation_experiment(
+        self,
+        results,
+        figsize=(8, 5)
+    ):
+        """
+        Plot average liquid-state distance over time.
+        """
+        import matplotlib.pyplot as plt
+
+        times = np.arange(self.steps) * self.dt
+
+        plt.figure(figsize=figsize, dpi=200)
+
+        for d, dist_trace in results.items():
+            plt.plot(times, dist_trace, label=f"d(u,v)={d}")
+
+        plt.xlabel("time [sec]")
+        plt.ylabel("state distance")
+        plt.title("Average distance of liquid states")
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
 
 
 
